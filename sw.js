@@ -1,6 +1,6 @@
 'use strict';
 // 每次发布修改 VERSION；新缓存完整就绪后，才提示用户更新。
-const VERSION='1.2.0';
+const VERSION='1.3.0';
 const PREFIX='ranke-shell-'+encodeURIComponent(self.registration.scope)+'-';
 const CACHE=PREFIX+VERSION;
 const FILES=['./','./index.html','./styles.css','./foods.js','./core.js','./app.js','./manifest.webmanifest','./icons/icon.svg','./icons/icon-192.png','./icons/icon-512.png','./icons/apple-touch-icon.png'];
