@@ -11,23 +11,63 @@ const floor1=x=>Math.floor(x*10)/10;
 const dateKey=(d=new Date())=>[d.getFullYear(),String(d.getMonth()+1).padStart(2,'0'),String(d.getDate()).padStart(2,'0')].join('-');
 const dayKey=(d=new Date())=>DAYS[(d.getDay()+6)%7];
 const dateValid=s=>/^\d{4}-\d{2}-\d{2}$/.test(s)&&dateKey(new Date(s+'T12:00:00'))===s;
+const addDays=(s,n)=>{const d=new Date(s+'T12:00:00');d.setDate(d.getDate()+n);return dateKey(d);};
+const dateDiff=(a,b)=>Math.round((Date.parse(b+'T00:00:00Z')-Date.parse(a+'T00:00:00Z'))/86400000);
+const timeMinutes=s=>/^([01]\d|2[0-3]):[0-5]\d$/.test(s)?Number(s.slice(0,2))*60+Number(s.slice(3)):null;
+function eventMinutes(r){const a=timeMinutes(r.start),b=timeMinutes(r.end);return a===null||b===null?0:(b-a+1440)%1440;}
+function sortedEvents(rows){return rows.slice().sort((a,b)=>(a.start||'99:99').localeCompare(b.start||'99:99'));}
+function scheduleStatus(s,now=new Date()){
+  const minute=now.getHours()*60+now.getMinutes(),key=dayKey(now),index=DAYS.indexOf(key),active=[];
+  const add=(r,day,offset)=>{const start=timeMinutes(r.start),end=timeMinutes(r.end);if(start===null||end===null||start===end)return;const a=start+offset,b=end+(end<start?1440:0)+offset;if(minute>=a&&minute<b)active.push({event:r,day,startedYesterday:offset<0});};
+  for(const r of s.schedule.days[DAYS[(index+6)%7]])add(r,DAYS[(index+6)%7],-1440);
+  for(const r of s.schedule.days[key])add(r,key,0);
+  let next=null;
+  for(let offset=0;offset<=7&&!next;offset++){const d=DAYS[(index+offset)%7];for(const r of sortedEvents(s.schedule.days[d])){const start=timeMinutes(r.start);if(start!==null&&(offset>0||start>minute)){next={event:r,day:d,daysAway:offset};break;}}}
+  return {active,next};
+}
+function searchFoods(s,query='',filter='all'){
+  const categories={staple:'主食 碳水 谷物',protein:'肉蛋 蛋白质',dairy:'乳制品 奶',fruitveg:'蔬菜 水果 蔬果',fat:'脂肪 坚果',mixed:'混合食物'};
+  const terms=String(query).trim().toLocaleLowerCase().split(/\s+/).filter(Boolean);
+  return foods(s).filter(f=>(filter==='all'||filter==='custom'&&!f.referenceEstimate||filter==='carbs'&&eligible(f,'carbs')||filter==='protein'&&eligible(f,'protein'))&&terms.every(q=>[f.name,f.referenceNote,f.referenceGroup,f.note,categories[f.category],f.category].join(' ').toLocaleLowerCase().includes(q)));
+}
+function reorderOption(s,type,meal,macro,optionId,to){
+  const list=s.recipes[type]?.[meal]?.[macro];if(!list)return false;
+  const from=list.findIndex(o=>o.id===optionId),target=Math.max(0,Math.min(list.length-1,Math.trunc(to)));
+  if(from<0||!Number.isFinite(target)||from===target)return false;
+  // Persist an implicit first choice before moving it, including a non-visible day type.
+  const daily=s.daily[dateKey()]||(s.daily[dateKey()]={checks:[],choices:{},nuts:false}),key=type+'_'+meal+'_'+macro;
+  if(!list.some(o=>o.id===daily.choices[key])&&list.length)daily.choices[key]=list[0].id;
+  list.splice(target,0,list.splice(from,1)[0]);return true;
+}
 const record=x=>x&&typeof x==='object'&&!Array.isArray(x);
 const id=x=>(typeof x==='number'&&Number.isFinite(x)?String(x):txt(x,150))||uid();
 const time=x=>/^([01]\d|2[0-3]):[0-5]\d$/.test(x)?x:'';
 function splits(){let r={};for(const type of ['train','rest']){r[type]={};MEALS.forEach((m,i)=>r[type][m]={carbs:[25,35,25,15][i],protein:[25,35,30,10][i]});}return r;}
 function recipes(){return Object.fromEntries(['train','rest'].map(t=>[t,Object.fromEntries(MEALS.map(m=>[m,{carbs:[],protein:[]}]))]));}
 function plan(n){return {days:Array.from({length:n},(_,i)=>({id:'split-'+n+'-'+(i+1),name:'第 '+(i+1)+' 练',parts:'',notes:'',exercises:[]})),week:Object.fromEntries(DAYS.map(d=>[d,'']))};}
-function defaults(){return {version:1,profileReady:false,profile:{gender:'male',level:200,weight:100,height:180,age:30,aerobic:200,protein:1.2,targetWeight:80,goalStartDate:dateKey(),goalWeeks:24},goals:{train:{carbs:0,protein:0,fat:0,calories:0},rest:{carbs:0,protein:0,fat:0,calories:0}},foods:[],mealSplits:splits(),recipes:recipes(),dietType:'train',recipeReady:{train:false,rest:false},schedule:{notes:'',days:Object.fromEntries(DAYS.map(d=>[d,[]]))},strength:{split:4,plans:{4:plan(4),5:plan(5)},active:null,history:[]},daily:{},timer:null,updatedAt:null};}
+function defaults(){return {version:1,profileReady:false,profile:{gender:'male',level:200,weight:100,height:180,age:30,aerobic:200,protein:1.2,targetWeight:80,goalStartDate:dateKey(),goalEndDate:addDays(dateKey(),167),goalWeeks:24},goals:{train:{carbs:0,protein:0,fat:0,calories:0},rest:{carbs:0,protein:0,fat:0,calories:0}},foods:[],mealSplits:splits(),recipes:recipes(),dietType:'train',recipeReady:{train:false,rest:false},schedule:{notes:'',days:Object.fromEntries(DAYS.map(d=>[d,[]]))},strength:{split:4,plans:{4:plan(4),5:plan(5)},active:null,history:[]},daily:{},timer:null,updatedAt:null};}
 function calcDetails(s){if(!s.profileReady)return null;const p=s.profile,bmi=p.weight/Math.pow(p.height/100,2),bmr=p.weight*9.99+p.height*6.25-p.age*4.92+(p.gender==='male'?5:-161),base=bmr/.7,protein=Math.floor(p.weight*floor1(p.protein)),fat=Math.floor(p.weight>=120?70:60),fixedCalories=fat*9+protein*4,balances={train:base+p.level+p.aerobic,rest:base+p.aerobic},goals={};for(const t of ['train','rest']){const calories=balances[t]*.64;goals[t]={carbs:Math.max(0,Math.floor((calories-fixedCalories)/4)),protein,fat,calories:Math.floor(calories)};}return {bmi,bmiText:bmi<18.5?'偏低':bmi<24?'正常':bmi<28?'偏高':'肥胖范围',bmr,base,balances,fixedCalories,goals};}
 function calcGoals(s){const details=calcDetails(s);return details?copy(details.goals):null;}
-function dietForDay(s,day=dayKey()){const plan=s.strength.plans[s.strength.split];return plan.days.some(d=>d.id===plan.week[day])?'train':'rest';}
 function mealTarget(s,t,m){const goals=calcGoals(s);if(!goals)return null;const g=goals[t],sp=s.mealSplits[t][m],carbs=Math.floor(g.carbs*sp.carbs/100),protein=Math.floor(g.protein*sp.protein/100),fat=Math.floor(g.fat*(sp.carbs+sp.protein)/200);return {carbs,protein,fat,calories:carbs*4+protein*4+fat*9};}
 function foods(s){return s.foods.concat(refs);}
 function food(s,fid){return foods(s).find(f=>f.id===fid);}
 function eligible(f,macro){return f&&f[macro]>0&&(!f.referenceEstimate||f.referenceMacro===macro);}
 function optionResult(s,option,macro,target){const entries=option.components.map(c=>({c,f:food(s,c.foodId)}));const fixed=entries.reduce((a,{c,f})=>a+(f&&f.measure==='perItem'&&c.fixedCount?f[macro]*c.fixedCount:0),0),remaining=Math.max(0,target-fixed);const auto=entries.filter(({c,f})=>f&&!(f.measure==='perItem'&&c.fixedCount)&&f[macro]>0);const shares=auto.reduce((a,{c})=>a+c.share,0);let totals={carbs:0,protein:0,fat:0,calories:0};const items=entries.map(({c,f})=>{if(!f)return {missing:true,name:'食物已缺失（'+c.foodId+'）',quantity:0,unit:''};const fixedItem=f.measure==='perItem'&&c.fixedCount;const assigned=remaining*(shares?c.share/shares:1/Math.max(auto.length,1));const quantity=fixedItem?c.fixedCount:f[macro]>0?Math.min(f.measure==='perItem'?1000:50000,Math.floor(assigned*(f.measure==='perItem'?1:100)/f[macro])):0;const ratio=quantity/(f.measure==='perItem'?1:100);for(const k of ['carbs','protein','fat'])totals[k]+=f[k]*ratio;totals.calories+=(f.kcal||f.carbs*4+f.protein*4+f.fat*9)*ratio;return {name:f.name,quantity,unit:f.measure==='perItem'?(f.referenceUnit||'份'):'g',estimated:!!f.referenceEstimate,invalid:f[macro]<=0};});return {items,totals,fixedExceeded:fixed>target,estimated:entries.some(e=>e.f&&e.f.referenceEstimate)};}
-function normalizeProfile(p,d){p=record(p)?p:{};return {gender:p.gender==='female'?'female':'male',level:[150,200,250].includes(Number(p.level))?Number(p.level):200,weight:floor1(num(p.weight,30,400,d.weight)),height:floor1(num(p.height,100,250,d.height)),age:Math.floor(num(p.age,14,100,d.age)),aerobic:num(p.aerobic,0,3000,d.aerobic),protein:floor1(num(p.protein,0,4,d.protein)),targetWeight:floor1(num(p.targetWeight,30,400,d.targetWeight)),goalStartDate:dateValid(p.goalStartDate)?p.goalStartDate:dateKey(),goalWeeks:Math.floor(num(p.goalWeeks,1,260,24))};}
-function weightGoal(s){if(!s.profileReady)return null;const p=s.profile;if(!(p.targetWeight>0&&p.targetWeight<p.weight&&p.goalWeeks>0&&dateValid(p.goalStartDate)))return null;const selected=new Date(p.goalStartDate+'T12:00:00'),monday=new Date(selected),offset=(selected.getDay()+6)%7;monday.setDate(selected.getDate()-offset);const end=new Date(monday);end.setDate(monday.getDate()+p.goalWeeks*7-1);const loss=p.weight-p.targetWeight,weekly=loss/p.goalWeeks,weeklyRate=weekly/p.weight*100;return {loss,weekly,weeklyRate,pace:weeklyRate<=.5?'较温和':weeklyRate<=1?'较快':'较激进',start:dateKey(monday),end:dateKey(end)};}
+function normalizeProfile(p,d){
+  p=record(p)?p:{};
+  const start=dateValid(p.goalStartDate)?p.goalStartDate:dateKey();
+  const days=Math.max(1,Math.min(1820,dateValid(p.goalEndDate)?dateDiff(start,p.goalEndDate)+1:Math.round(num(p.goalWeeks,1/7,260,24)*7)));
+  return {gender:p.gender==='female'?'female':'male',level:[150,200,250].includes(Number(p.level))?Number(p.level):200,weight:floor1(num(p.weight,30,400,d.weight)),height:floor1(num(p.height,100,250,d.height)),age:Math.floor(num(p.age,14,100,d.age)),aerobic:num(p.aerobic,0,3000,d.aerobic),protein:floor1(num(p.protein,0,4,d.protein)),targetWeight:floor1(num(p.targetWeight,30,400,d.targetWeight)),goalStartDate:start,goalEndDate:addDays(start,days-1),goalWeeks:days/7};
+}
+function weightGoal(s,now=new Date()){
+  if(!s.profileReady)return null;
+  const p=s.profile,end=dateValid(p.goalEndDate)?p.goalEndDate:addDays(p.goalStartDate,Math.round(p.goalWeeks*7)-1);
+  if(!(p.targetWeight>0&&p.targetWeight<p.weight&&dateValid(p.goalStartDate)&&dateValid(end)))return null;
+  const days=dateDiff(p.goalStartDate,end)+1;if(days<1||days>1820)return null;
+  const loss=p.weight-p.targetWeight,weekly=loss*7/days,weeklyRate=weekly/p.weight*100,today=dateKey(now),elapsed=Math.max(0,Math.min(days,dateDiff(p.goalStartDate,today))),remaining=today<p.goalStartDate?days:today>end?0:dateDiff(today,end)+1;
+  return {loss,weekly,weeklyRate,days,weeks:Math.floor(days/7),extraDays:days%7,elapsed,remaining,progress:elapsed/days*100,status:today<p.goalStartDate?'upcoming':today>end?'ended':'active',startsIn:Math.max(0,dateDiff(today,p.goalStartDate)),pace:weeklyRate<=.5?'较温和':weeklyRate<=1?'较快':'较激进',start:p.goalStartDate,end};
+}
+
 function normalizeFood(f){if(!record(f)||!txt(f.name,60).trim())throw Error('食品数据缺少名称');const measure=f.measure==='perItem'?'perItem':'per100g',max=measure==='perItem'?5000:100;const r={id:id(f.id),name:txt(f.name,60).trim(),category:txt(f.category,30)||'mixed',measure,basis:txt(f.basis,30)||'auto',referenceUnit:txt(f.referenceUnit,12)||'份',carbs:num(f.carbs,0,max),protein:num(f.protein,0,max),fat:num(f.fat,0,max),note:txt(f.note,1500)};if(r.id.startsWith('reference::'))throw Error('自定义食物编号与参考资料冲突');r.kcal=num(f.kcal,0,50000)||floor1(r.carbs*4+r.protein*4+r.fat*9);return r;}
 function normalizeExercise(e){if(!record(e))throw Error('动作格式错误');return {id:id(e.id),name:txt(e.name,80),sets:Math.floor(num(e.sets,1,30,3)),reps:txt(String(e.reps??''),30),weight:txt(String(e.weight??''),20),unit:['kg','lb','自重'].includes(e.unit)?e.unit:'kg',rest:Math.floor(num(e.rest,0,3600,90)),notes:txt(e.notes,2000)};}
 function normalizeSession(a){if(!record(a)||!Array.isArray(a.exercises))throw Error('训练记录格式错误');if(a.exercises.length>100)throw Error('训练记录过大');return {id:id(a.id),dayId:txt(a.dayId,150),name:txt(a.name,100),parts:txt(a.parts,150),split:a.split===5?5:4,startedAt:Number.isFinite(Date.parse(a.startedAt))?a.startedAt:new Date().toISOString(),endedAt:Number.isFinite(Date.parse(a.endedAt))?a.endedAt:null,notes:txt(a.notes,3000),planNotes:txt(a.planNotes,3000),exercises:a.exercises.map(e=>{const r=normalizeExercise(e);r.setsLog=(Array.isArray(e.setsLog)?e.setsLog:[]).slice(0,30).map(l=>({reps:txt(String(l.reps??''),30),weight:txt(String(l.weight??''),20),done:l.done===true}));return r;})};}
@@ -40,9 +80,9 @@ function migrateOld(d){if(!record(d)||!record(d.profile)||!Array.isArray(d.foods
 const rc=d.recipeChoices||{};if(rc.options)s.recipes=rc.options;else for(const t of ['train','rest'])for(const m of MEALS){const selections=rc.selections?.[t]?.[m]||[];for(const k of ['carbs','protein']){const fs=selections.filter(fid=>{const f=[...s.foods,...refs].find(x=>String(x.id)===String(fid));return f&&(f.basis===k||(f.basis==='auto'&&(k==='carbs'?f.category==='staple'||f.category==='fruitveg':f.category==='protein'||f.category==='dairy')));});const components=fs.map(fid=>({id:uid(),foodId:String(fid),share:100,fixedCount:rc.fixedItemCounts?.[t]?.[m]?.[fid]||0}));s.recipes[t][m][k]=rc.relations?.[t]?.[m]==='combine'&&components.length?[{id:uid(),components}]:components.map(c=>({id:uid(),components:[c]}));}}
 return normalize(s);}
 function validateFullState(d){if(!record(d)||!record(d.profile)||!record(d.goals)||!record(d.mealSplits)||!record(d.strength)||!record(d.schedule)||!record(d.recipes)||!Array.isArray(d.strength.history)||!record(d.strength.plans))throw Error('新版数据不完整');for(const day of DAYS)if(!Array.isArray(d.schedule.days?.[day]))throw Error('作息数据不完整');for(const t of ['train','rest']){if(!record(d.goals[t]))throw Error('营养目标数据不完整');for(const m of MEALS){if(!record(d.mealSplits[t]?.[m]))throw Error('四餐分配数据不完整');for(const k of ['carbs','protein'])if(!Array.isArray(d.recipes[t]?.[m]?.[k]))throw Error('食谱数据不完整');}}for(const n of [4,5])if(!Array.isArray(d.strength.plans[n]?.days))throw Error('训练计划不完整');return d;}
-function importBackup(input){if(!record(input)||input.schemaVersion!==1||!record(input.data))throw Error('文件不是支持的完整备份（版本 1）');if(input.app==='ranke-mobile')return {state:normalize(validateFullState(input.data)),legacy:false};if(input.app==='ranke-fitness-planner')return {state:migrateOld(input.data),legacy:true};throw Error('无法识别备份来源');}
-function backup(s){return {app:'ranke-mobile',schemaVersion:1,exportedAt:new Date().toISOString(),data:copy(s)};}
+function importBackup(input){if(!record(input)||input.schemaVersion!==1||!record(input.data))throw Error('文件不是支持的完整备份（版本 1）');if(input.app==='fitness-mobile'||input.app==='ranke-mobile')return {state:normalize(validateFullState(input.data)),legacy:false};if(input.app==='ranke-fitness-planner')return {state:migrateOld(input.data),legacy:true};throw Error('无法识别备份来源');}
+function backup(s){return {app:'fitness-mobile',schemaVersion:1,exportedAt:new Date().toISOString(),data:copy(s)};}
 function startSession(day,split){if(!day.exercises.length||day.exercises.some(e=>!e.name.trim()))throw Error('请先填写至少一个动作名称');return {id:uid(),dayId:day.id,name:day.name,parts:day.parts,split,startedAt:new Date().toISOString(),endedAt:null,notes:'',planNotes:day.notes,exercises:day.exercises.map(e=>({...copy(e),setsLog:Array.from({length:e.sets},()=>({reps:e.reps,weight:e.weight,done:false}))}))};}
 function sessionStats(a){let done=0,total=0,volumeKg=0,volumeLb=0;for(const e of a.exercises)for(const s of e.setsLog){total++;if(s.done){done++;const reps=Number(s.reps),weight=Number(s.weight);if(Number.isFinite(reps)&&Number.isFinite(weight)&&reps>0&&weight>=0){if(e.unit==='kg')volumeKg+=reps*weight;if(e.unit==='lb')volumeLb+=reps*weight;}}}return {done,total,volumeKg,volumeLb};}
-return {DAYS,DAY_NAMES,MEALS,MEAL_NAMES,NUTS,uid,copy,num,txt,dateKey,dayKey,dateValid,defaults,normalize,validateFullState,normalizeFood,normalizeExercise,calcDetails,calcGoals,weightGoal,dietForDay,mealTarget,foods,food,eligible,optionResult,importBackup,backup,startSession,sessionStats};
+return {DAYS,DAY_NAMES,MEALS,MEAL_NAMES,NUTS,uid,copy,num,txt,dateKey,dayKey,dateValid,addDays,dateDiff,timeMinutes,eventMinutes,sortedEvents,scheduleStatus,searchFoods,reorderOption,defaults,normalize,validateFullState,normalizeFood,normalizeExercise,calcDetails,calcGoals,weightGoal,mealTarget,foods,food,eligible,optionResult,importBackup,backup,startSession,sessionStats};
 });
